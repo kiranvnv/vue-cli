@@ -11,7 +11,7 @@ module.exports = (api, options) => {
       '--verbose': 'show full function definitions in output'
     }
   }, args => {
-    const get = require('get-value')
+    const { get } = require('@vue/cli-shared-utils')
     const { toString } = require('webpack-chain')
     const config = api.resolveWebpackConfig()
     const { _: paths, verbose } = args
@@ -24,7 +24,7 @@ module.exports = (api, options) => {
     } else if (args.rules) {
       res = config.module.rules.map(r => r.__ruleNames[0])
     } else if (args.plugins) {
-      res = config.plugins.map(p => p.__pluginName)
+      res = config.plugins.map(p => p.__pluginName || p.constructor.name)
     } else if (paths.length > 1) {
       res = {}
       paths.forEach(path => {

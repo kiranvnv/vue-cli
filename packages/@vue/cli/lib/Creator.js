@@ -1,20 +1,20 @@
-const EventEmitter = require('events')
-const fs = require('fs-extra')
+const path = require('path')
 const chalk = require('chalk')
 const debug = require('debug')
 const execa = require('execa')
 const inquirer = require('inquirer')
+const EventEmitter = require('events')
 const Generator = require('./Generator')
 const cloneDeep = require('lodash.clonedeep')
 const sortObject = require('./util/sortObject')
-const { loadModule } = require('./util/module')
 const getVersions = require('./util/getVersions')
 const { installDeps } = require('./util/installDeps')
 const { clearConsole } = require('./util/clearConsole')
 const PromptModuleAPI = require('./PromptModuleAPI')
 const writeFileTree = require('./util/writeFileTree')
 const { formatFeatures } = require('./util/features')
-const fetchRemotePreset = require('./util/fetchRemotePreset')
+const loadLocalPreset = require('./util/loadLocalPreset')
+const loadRemotePreset = require('./util/loadRemotePreset')
 const generateReadme = require('./util/generateReadme')
 
 const {
@@ -34,7 +34,8 @@ const {
   hasYarn,
   logWithSpinner,
   stopSpinner,
-  exit
+  exit,
+  loadModule
 } = require('@vue/cli-shared-utils')
 
 const isManualMode = answers => answers.preset === '__manual__'
@@ -88,7 +89,9 @@ module.exports = class Creator extends EventEmitter {
     // inject core service
     preset.plugins['@vue/cli-service'] = Object.assign({
       projectName: name
-    }, preset)
+    }, preset, {
+      bare: cliOptions.bare
+    })
 
     const packageManager = (
       cliOptions.packageManager ||
@@ -111,8 +114,13 @@ module.exports = class Creator extends EventEmitter {
     }
     const deps = Object.keys(preset.plugins)
     deps.forEach(dep => {
-      pkg.devDependencies[dep] = preset.plugins[dep].version ||
+      if (preset.plugins[dep]._isPreset) {
+        return
+      }
+      pkg.devDependencies[dep] = (
+        preset.plugins[dep].version ||
         (/^@vue/.test(dep) ? `^${latest}` : `latest`)
+      )
     })
     // write package.json
     await writeFileTree(context, {
@@ -141,7 +149,6 @@ module.exports = class Creator extends EventEmitter {
     }
 
     // run generator
-    log()
     log(`🚀  Invoking generators...`)
     this.emit('creation', { event: 'invoking-generators' })
     const plugins = await this.resolvePlugins(preset.plugins)
@@ -163,12 +170,19 @@ module.exports = class Creator extends EventEmitter {
     }
 
     // run complete cbs if any (injected by generators)
-    log()
     logWithSpinner('⚓', `Running completion hooks...`)
     this.emit('creation', { event: 'completion-hooks' })
     for (const cb of createCompleteCbs) {
       await cb()
     }
+
+    // generate README.md
+    stopSpinner()
+    log()
+    logWithSpinner('📄', 'Generating README.md...')
+    await writeFileTree(context, {
+      'README.md': generateReadme(generator.pkg, packageManager)
+    })
 
     // commit initial state
     let gitCommitFailed = false
@@ -185,14 +199,6 @@ module.exports = class Creator extends EventEmitter {
         gitCommitFailed = true
       }
     }
-
-    // generate README.md
-    stopSpinner()
-    log()
-    logWithSpinner('📄', 'Generating README.md...')
-    await writeFileTree(context, {
-      'README.md': generateReadme(generator.pkg, packageManager)
-    })
 
     // log instructions
     stopSpinner()
@@ -265,21 +271,21 @@ module.exports = class Creator extends EventEmitter {
     let preset
     const savedPresets = loadOptions().presets || {}
 
-    if (name.endsWith('.json')) {
-      preset = await fs.readJson(name)
+    if (name in savedPresets) {
+      preset = savedPresets[name]
+    } else if (name.endsWith('.json') || /^\./.test(name) || path.isAbsolute(name)) {
+      preset = await loadLocalPreset(path.resolve(name))
     } else if (name.includes('/')) {
       logWithSpinner(`Fetching remote preset ${chalk.cyan(name)}...`)
       this.emit('creation', { event: 'fetch-remote-preset' })
       try {
-        preset = await fetchRemotePreset(name, clone)
+        preset = await loadRemotePreset(name, clone)
         stopSpinner()
       } catch (e) {
         stopSpinner()
         error(`Failed fetching remote preset ${chalk.cyan(name)}:`)
         throw e
       }
-    } else {
-      preset = savedPresets[name]
     }
 
     // use default preset if user has not overwritten it
@@ -304,18 +310,16 @@ module.exports = class Creator extends EventEmitter {
   // { id: options } => [{ id, apply, options }]
   async resolvePlugins (rawPlugins) {
     // ensure cli-service is invoked first
-    rawPlugins = sortObject(rawPlugins, ['@vue/cli-service'])
+    rawPlugins = sortObject(rawPlugins, ['@vue/cli-service'], true)
     const plugins = []
     for (const id of Object.keys(rawPlugins)) {
-      const apply = loadModule(`${id}/generator`, this.context)
-      if (!apply) {
-        throw new Error(`Failed to resolve plugin: ${id}`)
-      }
+      const apply = loadModule(`${id}/generator`, this.context) || (() => {})
       let options = rawPlugins[id] || {}
       if (options.prompts) {
         const prompts = loadModule(`${id}/prompts`, this.context)
         if (prompts) {
-          console.log(`\n${chalk.cyan(id)}`)
+          log()
+          log(`${chalk.cyan(options._isPreset ? `Preset options:` : id)}`)
           options = await inquirer.prompt(prompts)
         }
       }
@@ -443,10 +447,15 @@ module.exports = class Creator extends EventEmitter {
     if (!hasGit()) {
       return false
     }
-    if (cliOptions.git) {
-      return cliOptions.git !== 'false' && cliOptions.git !== false
+    // --git
+    if (cliOptions.forceGit) {
+      return true
     }
-
+    // --no-git
+    if (cliOptions.git === false || cliOptions.git === 'false') {
+      return false
+    }
+    // default: true unless already in a git repo
     return !hasProjectGit(this.context)
   }
 }

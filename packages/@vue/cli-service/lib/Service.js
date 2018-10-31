@@ -8,7 +8,7 @@ const Config = require('webpack-chain')
 const PluginAPI = require('./PluginAPI')
 const loadEnv = require('./util/loadEnv')
 const defaultsDeep = require('lodash.defaultsdeep')
-const { warn, error, isPlugin } = require('@vue/cli-shared-utils')
+const { warn, error, isPlugin, loadModule } = require('@vue/cli-shared-utils')
 
 const { defaults, validate } = require('./options')
 
@@ -22,6 +22,9 @@ module.exports = class Service {
     this.webpackRawConfigFns = []
     this.devServerConfigFns = []
     this.commands = {}
+    // Folder containing the target package.json for plugins
+    this.pkgContext = context
+    // package.json containing the plugins
     this.pkg = this.resolvePkg(pkg)
     // If there are inline plugins, they will be used instead of those
     // found in package.json.
@@ -36,11 +39,16 @@ module.exports = class Service {
     }, {})
   }
 
-  resolvePkg (inlinePkg) {
+  resolvePkg (inlinePkg, context = this.context) {
     if (inlinePkg) {
       return inlinePkg
-    } else if (fs.existsSync(path.join(this.context, 'package.json'))) {
-      return readPkg.sync({ cwd: this.context })
+    } else if (fs.existsSync(path.join(context, 'package.json'))) {
+      const pkg = readPkg.sync({ cwd: context })
+      if (pkg.vuePlugins && pkg.vuePlugins.resolveFrom) {
+        this.pkgContext = path.resolve(context, pkg.vuePlugins.resolveFrom)
+        return this.resolvePkg(null, this.pkgContext)
+      }
+      return pkg
     } else {
       return {}
     }
@@ -128,6 +136,8 @@ module.exports = class Service {
       apply: require(id)
     })
 
+    let plugins
+
     const builtInPlugins = [
       './commands/serve',
       './commands/build',
@@ -142,16 +152,46 @@ module.exports = class Service {
     ].map(idToPlugin)
 
     if (inlinePlugins) {
-      return useBuiltIn !== false
+      plugins = useBuiltIn !== false
         ? builtInPlugins.concat(inlinePlugins)
         : inlinePlugins
     } else {
       const projectPlugins = Object.keys(this.pkg.devDependencies || {})
         .concat(Object.keys(this.pkg.dependencies || {}))
         .filter(isPlugin)
-        .map(idToPlugin)
-      return builtInPlugins.concat(projectPlugins)
+        .map(id => {
+          if (
+            this.pkg.optionalDependencies &&
+            id in this.pkg.optionalDependencies
+          ) {
+            let apply = () => {}
+            try {
+              apply = require(id)
+            } catch (e) {
+              warn(`Optional dependency ${id} is not installed.`)
+            }
+
+            return { id, apply }
+          } else {
+            return idToPlugin(id)
+          }
+        })
+      plugins = builtInPlugins.concat(projectPlugins)
     }
+
+    // Local plugins
+    if (this.pkg.vuePlugins && this.pkg.vuePlugins.service) {
+      const files = this.pkg.vuePlugins.service
+      if (!Array.isArray(files)) {
+        throw new Error(`Invalid type for option 'vuePlugins.service', expected 'array' but got ${typeof files}.`)
+      }
+      plugins = plugins.concat(files.map(file => ({
+        id: `local:${file}`,
+        apply: loadModule(file, this.pkgContext)
+      })))
+    }
+
+    return plugins
   }
 
   async run (name, args = {}, rawArgv = []) {
@@ -192,6 +232,7 @@ module.exports = class Service {
     }
     // get raw config
     let config = chainableConfig.toConfig()
+    const original = config
     // apply raw config fns
     this.webpackRawConfigFns.forEach(fn => {
       if (typeof fn === 'function') {
@@ -203,6 +244,16 @@ module.exports = class Service {
         config = merge(config, fn)
       }
     })
+
+    // #2206 If config is merged by merge-webpack, it discards the __ruleNames
+    // information injected by webpack-chain. Restore the info so that
+    // vue inspect works properly.
+    if (config !== original) {
+      cloneRuleNames(
+        config.module && config.module.rules,
+        original.module && original.module.rules
+      )
+    }
 
     // check if the user has manually mutated output.publicPath
     const target = process.env.VUE_CLI_BUILD_TARGET
@@ -222,7 +273,7 @@ module.exports = class Service {
 
   loadUserOptions () {
     // vue.config.js
-    let fileConfig, pkgConfig, resolved, resovledFrom
+    let fileConfig, pkgConfig, resolved, resolvedFrom
     const configPath = (
       process.env.VUE_CLI_SERVICE_CONFIG_PATH ||
       path.resolve(this.context, 'vue.config.js')
@@ -264,20 +315,20 @@ module.exports = class Service {
         )
       }
       resolved = fileConfig
-      resovledFrom = 'vue.config.js'
+      resolvedFrom = 'vue.config.js'
     } else if (pkgConfig) {
       resolved = pkgConfig
-      resovledFrom = '"vue" field in package.json'
+      resolvedFrom = '"vue" field in package.json'
     } else {
       resolved = this.inlineOptions || {}
-      resovledFrom = 'inline options'
+      resolvedFrom = 'inline options'
     }
 
-    // normlaize some options
+    // normalize some options
+    ensureSlash(resolved, 'baseUrl')
     if (typeof resolved.baseUrl === 'string') {
       resolved.baseUrl = resolved.baseUrl.replace(/^\.\//, '')
     }
-    ensureSlash(resolved, 'baseUrl')
     removeSlash(resolved, 'outputDir')
 
     // deprecation warning
@@ -292,7 +343,7 @@ module.exports = class Service {
     // validate options
     validate(resolved, msg => {
       error(
-        `Invalid options in ${chalk.bold(resovledFrom)}: ${msg}`
+        `Invalid options in ${chalk.bold(resolvedFrom)}: ${msg}`
       )
     })
 
@@ -312,6 +363,20 @@ function ensureSlash (config, key) {
 
 function removeSlash (config, key) {
   if (typeof config[key] === 'string') {
-    config[key] = config[key].replace(/^\/|\/$/g, '')
+    config[key] = config[key].replace(/\/$/g, '')
   }
+}
+
+function cloneRuleNames (to, from) {
+  if (!to || !from) {
+    return
+  }
+  from.forEach((r, i) => {
+    if (to[i]) {
+      Object.defineProperty(to[i], '__ruleNames', {
+        value: r.__ruleNames
+      })
+      cloneRuleNames(to[i].oneOf, r.oneOf)
+    }
+  })
 }

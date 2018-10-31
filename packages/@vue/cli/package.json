@@ -1,14 +1,10 @@
 {
   "name": "@vue/cli",
-  "version": "3.0.0-rc.3",
+  "version": "3.1.0",
   "description": "Command line interface for rapid Vue.js development",
   "bin": {
     "vue": "bin/vue.js"
   },
-  "files": [
-    "bin",
-    "lib"
-  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/vuejs/vue-cli.git"
@@ -22,14 +18,15 @@
   "bugs": {
     "url": "https://github.com/vuejs/vue-cli/issues"
   },
-  "homepage": "https://github.com/vuejs/vue-cli#readme",
+  "homepage": "https://cli.vuejs.org/",
   "publishConfig": {
     "access": "public"
   },
   "dependencies": {
-    "@vue/cli-shared-utils": "^3.0.0-rc.3",
-    "@vue/cli-ui": "^3.0.0-rc.3",
-    "@vue/cli-ui-addon-webpack": "^3.0.0-rc.3",
+    "@vue/cli-shared-utils": "^3.1.0",
+    "@vue/cli-ui": "^3.1.0",
+    "@vue/cli-ui-addon-webpack": "^3.1.0",
+    "@vue/cli-ui-addon-widgets": "^3.1.0",
     "chalk": "^2.4.1",
     "cmd-shim": "^2.0.2",
     "commander": "^2.16.0",
@@ -53,12 +50,12 @@
     "request-promise-native": "^1.0.5",
     "resolve": "^1.8.1",
     "semver": "^5.5.0",
-    "shortid": "^2.2.8",
+    "shortid": "^2.2.11",
     "slash": "^2.0.0",
     "validate-npm-package-name": "^3.0.0",
     "yaml-front-matter": "^3.4.1"
   },
   "engines": {
-    "node": ">=8"
+    "node": ">=8.9"
   }
 }

@@ -25,5 +25,11 @@ module.exports = {
       )
   },
 
-  lintOnSave: undefined
+  css: {
+    loaderOptions: {
+      stylus: {
+        import: ['~@/style/imports']
+      }
+    }
+  }
 }
